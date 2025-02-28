@@ -9,6 +9,7 @@
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
+#include <chrono>
 #ifdef _WIN32
 #  define WIN32_LEAN_AND_MEAN
 #  ifndef NOMINMAX
@@ -1149,188 +1150,288 @@ rpc_server::~rpc_server() {
 
 static void rpc_serve_client(ggml_backend_t backend, sockfd_t sockfd, size_t free_mem, size_t total_mem) {
     rpc_server server(backend);
+    using namespace std::chrono;
+    
     while (true) {
+        auto t_start = high_resolution_clock::now();
         uint8_t cmd;
         if (!recv_data(sockfd, &cmd, 1)) {
+            fprintf(stderr, "[RPC] ERROR: Failed to receive command header\n");
             break;
         }
-        if (cmd >= RPC_CMD_COUNT) {
-            // fail fast if the command is invalid
-            fprintf(stderr, "Unknown command: %d\n", cmd);
-            break;
-        }
+
+        fprintf(stderr, "[RPC] CMD 0x%02X received\n", cmd);
+        
         switch (cmd) {
             case RPC_CMD_ALLOC_BUFFER: {
                 rpc_msg_alloc_buffer_req request;
                 if (!recv_msg(sockfd, &request, sizeof(request))) {
+                    fprintf(stderr, "  |- ALLOC_BUFFER: Failed to receive request\n");
                     return;
                 }
+                fprintf(stderr, "  |- ALLOC_BUFFER: size=%zu align=%zu\n", request.size, request.alignment);
+                
                 rpc_msg_alloc_buffer_rsp response;
                 server.alloc_buffer(request, response);
+                fprintf(stderr, "  |- ALLOC_RESULT: buffer_id=%d status=%d\n", response.buffer_id, response.status);
+                
                 if (!send_msg(sockfd, &response, sizeof(response))) {
+                    fprintf(stderr, "  |- ALLOC_BUFFER: Failed to send response\n");
                     return;
                 }
                 break;
             }
+
             case RPC_CMD_GET_ALLOC_SIZE: {
                 rpc_msg_get_alloc_size_req request;
                 if (!recv_msg(sockfd, &request, sizeof(request))) {
+                    fprintf(stderr, "  |- GET_ALLOC_SIZE: Failed to receive request\n");
                     return;
                 }
+                fprintf(stderr, "  |- GET_ALLOC_SIZE: tensor_name=%.*s\n", 
+                       (int)sizeof(request.tensor_name), request.tensor_name);
+                
                 rpc_msg_get_alloc_size_rsp response;
                 server.get_alloc_size(request, response);
+                fprintf(stderr, "  |- ALLOC_SIZE: %zu bytes\n", response.size);
+                
                 if (!send_msg(sockfd, &response, sizeof(response))) {
+                    fprintf(stderr, "  |- GET_ALLOC_SIZE: Failed to send response\n");
                     return;
                 }
                 break;
             }
+
             case RPC_CMD_GET_ALIGNMENT: {
-                if (!recv_msg(sockfd, nullptr, 0)) {
-                    return;
-                }
+                fprintf(stderr, "  |- GET_ALIGNMENT\n");
                 rpc_msg_get_alignment_rsp response;
                 server.get_alignment(response);
+                fprintf(stderr, "  |- ALIGNMENT: %zu\n", response.alignment);
+                
                 if (!send_msg(sockfd, &response, sizeof(response))) {
+                    fprintf(stderr, "  |- GET_ALIGNMENT: Failed to send response\n");
                     return;
                 }
                 break;
             }
+
             case RPC_CMD_GET_MAX_SIZE: {
-                if (!recv_msg(sockfd, nullptr, 0)) {
-                    return;
-                }
+                fprintf(stderr, "  |- GET_MAX_SIZE\n");
                 rpc_msg_get_max_size_rsp response;
                 server.get_max_size(response);
+                fprintf(stderr, "  |- MAX_SIZE: %zu bytes\n", response.max_size);
+                
                 if (!send_msg(sockfd, &response, sizeof(response))) {
+                    fprintf(stderr, "  |- GET_MAX_SIZE: Failed to send response\n");
                     return;
                 }
                 break;
             }
+
             case RPC_CMD_BUFFER_GET_BASE: {
                 rpc_msg_buffer_get_base_req request;
                 if (!recv_msg(sockfd, &request, sizeof(request))) {
+                    fprintf(stderr, "  |- BUFFER_GET_BASE: Failed to receive request\n");
                     return;
                 }
+                fprintf(stderr, "  |- BUFFER_GET_BASE: buffer_id=%d\n", request.buffer_id);
+                
                 rpc_msg_buffer_get_base_rsp response;
                 if (!server.buffer_get_base(request, response)) {
+                    fprintf(stderr, "  |- BUFFER_GET_BASE: Invalid buffer\n");
                     return;
                 }
+                fprintf(stderr, "  |- BUFFER_BASE: %p\n", response.ptr);
+                
                 if (!send_msg(sockfd, &response, sizeof(response))) {
+                    fprintf(stderr, "  |- BUFFER_GET_BASE: Failed to send response\n");
                     return;
                 }
                 break;
             }
+
             case RPC_CMD_FREE_BUFFER: {
                 rpc_msg_free_buffer_req request;
                 if (!recv_msg(sockfd, &request, sizeof(request))) {
+                    fprintf(stderr, "  |- FREE_BUFFER: Failed to receive request\n");
                     return;
                 }
+                fprintf(stderr, "  |- FREE_BUFFER: buffer_id=%d\n", request.buffer_id);
+                
                 if (!server.free_buffer(request)) {
+                    fprintf(stderr, "  |- FREE_BUFFER: Invalid buffer\n");
                     return;
                 }
+                fprintf(stderr, "  |- BUFFER_FREED\n");
+                
                 if (!send_msg(sockfd, nullptr, 0)) {
+                    fprintf(stderr, "  |- FREE_BUFFER: Failed to send ack\n");
                     return;
                 }
                 break;
             }
+
             case RPC_CMD_BUFFER_CLEAR: {
                 rpc_msg_buffer_clear_req request;
                 if (!recv_msg(sockfd, &request, sizeof(request))) {
+                    fprintf(stderr, "  |- BUFFER_CLEAR: Failed to receive request\n");
                     return;
                 }
+                fprintf(stderr, "  |- BUFFER_CLEAR: buffer_id=%d\n", request.buffer_id);
+                
                 if (!server.buffer_clear(request)) {
+                    fprintf(stderr, "  |- BUFFER_CLEAR: Failed\n");
                     return;
                 }
+                fprintf(stderr, "  |- BUFFER_CLEARED\n");
+                
                 if (!send_msg(sockfd, nullptr, 0)) {
+                    fprintf(stderr, "  |- BUFFER_CLEAR: Failed to send ack\n");
                     return;
                 }
                 break;
             }
+
             case RPC_CMD_SET_TENSOR: {
                 std::vector<uint8_t> input;
                 if (!recv_msg(sockfd, input)) {
+                    fprintf(stderr, "  |- SET_TENSOR: Failed to receive data\n");
                     return;
                 }
+                fprintf(stderr, "  |- SET_TENSOR: data_size=%zu\n", input.size());
+                
                 if (!server.set_tensor(input)) {
+                    fprintf(stderr, "  |- SET_TENSOR: Deserialize failed\n");
                     return;
                 }
+                fprintf(stderr, "  |- TENSOR_SET\n");
+                
                 if (!send_msg(sockfd, nullptr, 0)) {
+                    fprintf(stderr, "  |- SET_TENSOR: Failed to send ack\n");
                     return;
                 }
                 break;
             }
+
             case RPC_CMD_INIT_TENSOR: {
                 rpc_msg_init_tensor_req request;
-                if (!recv_msg(sockfd, &request,sizeof(request))) {
+                if (!recv_msg(sockfd, &request, sizeof(request))) {
+                    fprintf(stderr, "  |- INIT_TENSOR: Failed to receive request\n");
                     return;
                 }
+                fprintf(stderr, "  |- INIT_TENSOR: type=%d dims=%d,%d,%d,%d\n",
+                       request.type, request.ne[0], request.ne[1], request.ne[2], request.ne[3]);
+                
                 if (!server.init_tensor(request)) {
+                    fprintf(stderr, "  |- INIT_TENSOR: Failed\n");
                     return;
                 }
+                fprintf(stderr, "  |- TENSOR_INITIALIZED\n");
+                
                 if (!send_msg(sockfd, nullptr, 0)) {
+                    fprintf(stderr, "  |- INIT_TENSOR: Failed to send ack\n");
                     return;
                 }
                 break;
             }
+
             case RPC_CMD_GET_TENSOR: {
                 rpc_msg_get_tensor_req request;
                 if (!recv_msg(sockfd, &request, sizeof(request))) {
+                    fprintf(stderr, "  |- GET_TENSOR: Failed to receive request\n");
                     return;
                 }
+                fprintf(stderr, "  |- GET_TENSOR: buffer_id=%d\n", request.buffer_id);
+                
                 std::vector<uint8_t> response;
                 if (!server.get_tensor(request, response)) {
+                    fprintf(stderr, "  |- GET_TENSOR: Invalid buffer\n");
                     return;
                 }
+                fprintf(stderr, "  |- TENSOR_DATA: %zu bytes\n", response.size());
+                
                 if (!send_msg(sockfd, response.data(), response.size())) {
+                    fprintf(stderr, "  |- GET_TENSOR: Failed to send data\n");
                     return;
                 }
                 break;
             }
+
             case RPC_CMD_COPY_TENSOR: {
                 rpc_msg_copy_tensor_req request;
                 if (!recv_msg(sockfd, &request, sizeof(request))) {
+                    fprintf(stderr, "  |- COPY_TENSOR: Failed to receive request\n");
                     return;
                 }
+                fprintf(stderr, "  |- COPY_TENSOR: src=%d dst=%d\n", 
+                       request.src_buffer_id, request.dst_buffer_id);
+                
                 rpc_msg_copy_tensor_rsp response;
                 if (!server.copy_tensor(request, response)) {
+                    fprintf(stderr, "  |- COPY_TENSOR: Failed\n");
                     return;
                 }
+                fprintf(stderr, "  |- COPIED_BYTES: %zu\n", response.n_bytes);
+                
                 if (!send_msg(sockfd, &response, sizeof(response))) {
+                    fprintf(stderr, "  |- COPY_TENSOR: Failed to send response\n");
                     return;
                 }
                 break;
             }
+
             case RPC_CMD_GRAPH_COMPUTE: {
                 std::vector<uint8_t> input;
                 if (!recv_msg(sockfd, input)) {
+                    fprintf(stderr, "  |- GRAPH_COMPUTE: Failed to receive graph\n");
                     return;
                 }
+                fprintf(stderr, "  |- GRAPH_COMPUTE: input_size=%zu bytes\n", input.size());
+                
                 rpc_msg_graph_compute_rsp response;
                 if (!server.graph_compute(input, response)) {
+                    fprintf(stderr, "  |- GRAPH_COMPUTE: Execution failed\n");
                     return;
                 }
+                fprintf(stderr, "  |- COMPUTE_RESULT: nodes=%d time=%.2fms perf=%.2f nodes/ms\n",
+                       response.n_nodes, response.compute_time_ms, 
+                       response.n_nodes / response.compute_time_ms);
+                
                 if (!send_msg(sockfd, &response, sizeof(response))) {
+                    fprintf(stderr, "  |- GRAPH_COMPUTE: Failed to send response\n");
                     return;
                 }
                 break;
             }
+
             case RPC_CMD_GET_DEVICE_MEMORY: {
-                if (!recv_msg(sockfd, nullptr, 0)) {
-                    return;
-                }
+                fprintf(stderr, "  |- GET_DEVICE_MEMORY\n");
                 rpc_msg_get_device_memory_rsp response;
                 response.free_mem = free_mem;
                 response.total_mem = total_mem;
+                fprintf(stderr, "  |- MEMORY_STATS: free=%zu (%.1f%%) total=%zu\n",
+                       free_mem, (free_mem * 100.0f)/total_mem, total_mem);
+                
                 if (!send_msg(sockfd, &response, sizeof(response))) {
+                    fprintf(stderr, "  |- GET_DEVICE_MEMORY: Failed to send response\n");
                     return;
                 }
                 break;
             }
+
             default: {
-                fprintf(stderr, "Unknown command: %d\n", cmd);
+                auto t_end = high_resolution_clock::now();
+                auto duration = duration_cast<microseconds>(t_end - t_start);
+                fprintf(stderr, "[RPC] ERROR: Unknown command 0x%02X (processed in %lldμs)\n", 
+                      cmd, duration.count());
                 return;
             }
         }
+
+        auto t_end = high_resolution_clock::now();
+        auto duration = duration_cast<microseconds>(t_end - t_start);
+        fprintf(stderr, "  |- PROCESS_TIME: %lldμs\n", duration.count());
+        fprintf(stderr, "[RPC] CMD 0x%02X completed\n\n", cmd);
     }
 }
 
