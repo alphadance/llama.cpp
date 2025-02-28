@@ -798,7 +798,8 @@ static ggml_backend_opencl_context * ggml_cl2_init(ggml_backend_dev_t dev) {
     CL_CHECK((backend_ctx->CL_mul_mat_Ab_Bi_8x4 = clCreateKernel(backend_ctx->program_CL_gemm, "kernel_mul_mat_Ab_Bi_8x4", &err), err));
 
     // Allocate intermediate buffers and images
-    size_t max_A_q_d_bytes = 311164928;
+    // size_t max_A_q_d_bytes = 311164928;
+    size_t max_A_q_d_bytes = 268435456;
     size_t max_A_s_d_bytes = 38895616;
     size_t max_B_d_bytes = 45088768;
 
