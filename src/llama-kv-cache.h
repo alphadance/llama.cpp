@@ -18,7 +18,7 @@ struct llama_kv_cell {
     bool has_seq_id(const llama_seq_id & id) const {
         return seq_id.find(id) != seq_id.end();
     }
-
+ 
     bool is_empty() const {
         return seq_id.empty();
     }
